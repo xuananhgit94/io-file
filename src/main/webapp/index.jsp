@@ -15,7 +15,8 @@
       <label for="excelFile">Select an Excel file and Json file to upload:</label>
       <input type="file" name="excelFile" id="excelFile" multiple>
       <br>
-      <input type="submit" value="Download">
+      <button type="submit" name="action" value="bankList">bankList</button>
+      <button type="submit" name="action" value="bankBranchList">bankBranchList</button>
     </form>
   </body>
 </html>

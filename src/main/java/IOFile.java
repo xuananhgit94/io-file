@@ -8,6 +8,8 @@ import org.apache.commons.fileupload.servlet.ServletFileUpload;
 import org.apache.commons.io.IOUtils;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
+import javax.servlet.ServletOutputStream;
 import javax.servlet.annotation.WebServlet;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
@@ -15,6 +17,9 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 @WebServlet("/MergeFileServlet")
 public class IOFile extends HttpServlet {
@@ -31,28 +36,122 @@ public class IOFile extends HttpServlet {
     @Override
     protected void doPost(HttpServletRequest request, HttpServletResponse response) {
         List<FileItem> fileItems;
+        String action = "";
         try {
             fileItems = uploader.parseRequest(request);
-            InputStream fileExcel = null;
-            InputStream fileJson = null;
-            for (var fileItem : fileItems) {
-                if (fileItem.getName().endsWith(".json")) {
-                    fileJson = fileItem.getInputStream();
-                } else {
-                    fileExcel = fileItem.getInputStream();
+            for (FileItem item : fileItems) {
+                if (item.isFormField() && item.getFieldName().equals("action")) {
+                    action = item.getString();
+                    break;
                 }
             }
-            var dataExcels = readFileExcel(fileExcel);
-            var dataJsons = readFileJson(fileJson);
-            var mergeData = mergeData(dataJsons, dataExcels);
-            var fileDownload = prepareJsonFile(mergeData);
-            System.out.println("data excel = " + dataExcels.size());
-            System.out.println("data json = " + dataJsons.size());
-            System.out.println("data merge = " + mergeData.size());
-            download(fileDownload, response);
+            if (action.equals("bankList")) {
+                mergeBankList(response, fileItems);
+            } else {
+                mergeBankBranchList(response, fileItems);
+            }
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    private void mergeBankBranchList(HttpServletResponse response, List<FileItem> fileItems) throws IOException {
+        InputStream fileExcel = null;
+        InputStream fileJson = null;
+        for (var fileItem : fileItems) {
+            if (Objects.isNull(fileItem.getName())) {
+                continue;
+            }
+            if (fileItem.getName().endsWith(".json")) {
+                fileJson = fileItem.getInputStream();
+            } else {
+                fileExcel = fileItem.getInputStream();
+            }
+        }
+        var dataExcels = readFileExcelBranch(fileExcel);
+        var dataJsons = readFileJson(fileJson);
+        Map<String, List<Map<String, Object>>> map = dataExcels.stream().collect(Collectors.groupingBy(x -> String.valueOf(x.get("BANK_CODE"))));
+        map.forEach((k, v) -> {
+            map.put(k, mergeDataBranch(dataExcels ,dataJsons, v));
+        });
+        Map<String, List<Map<String, Object>>> mapResult = getResult(dataJsons, map);
+        System.out.println("data json = " + dataJsons.size());
+        System.out.println("count bank update = " + mapResult.size());
+        Map<String, List<Map<String, Object>>> data = dataExcels.stream().collect(Collectors.groupingBy(x -> String.valueOf(x.get("BANK_CODE"))));
+        data.forEach((k, v) -> System.out.println(v));
+        File file = prepareJsonBankBranchFile(mapResult);
+        downloadBranch(file, response);
+    }
+
+    private Map<String, List<Map<String, Object>>> getResult(List<Map<String, Object>> dataJsons, Map<String, List<Map<String, Object>>> map) {
+        Map<String, List<Map<String, Object>>> result = new LinkedHashMap<>();
+        dataJsons.forEach(x -> {
+            String bankCode = String.valueOf(x.get("BANK_CODE"));
+            AtomicBoolean isBank = new AtomicBoolean(true);
+            map.forEach((k, v) -> {
+                if (k.equals(bankCode)) {
+                    isBank.set(false);
+                    result.put(bankCode, v);
+                }
+            });
+            if (isBank.get()) {
+                System.out.println(x);
+            }
+        });
+        return result;
+    }
+
+    private File prepareJsonBankBranchFile(Map<String, List<Map<String, Object>>> map) throws IOException {
+        ObjectMapper objectMapper = new ObjectMapper();
+        JsonNode jsonNode = objectMapper.convertValue(map, JsonNode.class);
+        File jsonFile = new File("bank_branches.json");
+        objectMapper.writeValue(jsonFile, jsonNode);
+        return jsonFile;
+    }
+
+    private List<Map<String, Object>> mergeDataBranch(List<Map<String, Object>> dataExcelFile, List<Map<String, Object>> dataJsons, List<Map<String, Object>> dataExcels) {
+        var result = new ArrayList<Map<String, Object>>();
+        for (Map<String, Object> dataJson : dataJsons) {
+            Map<String, Object> dataMerge = new HashMap<>();
+            int bankCodeJson = Integer.parseInt(dataJson.get("BANK_CODE").toString());
+            for (Map<String, Object> dataExcel : dataExcels) {
+                int bankCodeExcel = Integer.parseInt(dataExcel.get("BANK_CODE").toString());
+                if (bankCodeJson == bankCodeExcel) {
+                    dataMerge.put("BANK_ORDER", dataJson.get("BANK_ORDER"));
+                    dataMerge.put("BANK_KEY", dataJson.get("BANK_KEY"));
+                    dataMerge.put("BRANCH_CODE", dataExcel.get("BRANCH_CODE"));
+                    dataMerge.put("BRANCH_NAME", dataExcel.get("CITAD_NAME"));
+                    dataMerge.put("BEN_ID", dataJson.get("BEN_ID"));
+                    dataMerge.put("BANK_NAME", dataJson.get("BANK_NAME"));
+                    result.add(dataMerge);
+                    dataExcelFile.remove(dataExcel);
+                }
+            }
+        }
+        return result;
+    }
+
+    private void mergeBankList(HttpServletResponse response, List<FileItem> fileItems) throws IOException {
+        InputStream fileExcel = null;
+        InputStream fileJson = null;
+        for (var fileItem : fileItems) {
+            if (Objects.isNull(fileItem.getName())) {
+                continue;
+            }
+            if (fileItem.getName().endsWith(".json")) {
+                fileJson = fileItem.getInputStream();
+            } else {
+                fileExcel = fileItem.getInputStream();
+            }
+        }
+        var dataExcels = readFileExcel(fileExcel);
+        var dataJsons = readFileJson(fileJson);
+        var mergeData = mergeData(dataJsons, dataExcels);
+        var fileDownload = prepareJsonFile(mergeData);
+        System.out.println("data excel = " + dataExcels.size());
+        System.out.println("data json = " + dataJsons.size());
+        System.out.println("data merge = " + mergeData.size());
+        download(fileDownload, response);
     }
 
     private File prepareJsonFile(List<Map<String, Object>> dataMerge) throws IOException {
@@ -67,6 +166,23 @@ public class IOFile extends HttpServlet {
         }
         return outputFile;
     }
+    private void downloadBranch(File file, HttpServletResponse response) throws IOException {
+        FileInputStream inputStream = new FileInputStream(file);
+        ServletOutputStream outputStream = response.getOutputStream();
+
+        response.setContentType("application/json");
+        response.setHeader("Content-Disposition", "attachment; filename=\"" + file.getName() + "\"");
+
+        byte[] buffer = new byte[4096];
+        int bytesRead;
+        while ((bytesRead = inputStream.read(buffer)) != -1) {
+            outputStream.write(buffer, 0, bytesRead);
+        }
+
+        inputStream.close();
+        outputStream.flush();
+        outputStream.close();
+    }
 
     private void download(File file, HttpServletResponse response) throws IOException {
         try (var inputStream = new FileInputStream(file)) {
@@ -79,7 +195,6 @@ public class IOFile extends HttpServlet {
 
     private List<Map<String, Object>> mergeData(List<Map<String, Object>> dataJson, List<Map<String, Object>> dataExel) {
         var mergedList = new ArrayList<Map<String, Object>>();
-        List<Map<String, Object>> sporadicExelData = new ArrayList<>(dataExel);
         Map<String, Object> dataTemplate = dataExel.get(0);
         for (Map<String, Object> jsonData : dataJson) {
             int jsonBENID = Integer.parseInt(jsonData.get("BEN_ID").toString());
@@ -91,7 +206,6 @@ public class IOFile extends HttpServlet {
                         Map<String, Object> mergedData = new LinkedHashMap<>(jsonData);
                         data.forEach(mergedData::put);
                         mergedList.add(mergedData);
-                        sporadicExelData.remove(data);
                         isProcess = false;
                         break;
                     }
@@ -111,9 +225,6 @@ public class IOFile extends HttpServlet {
                 mergedList.add(mergedData);
             }
         }
-        for (var excelData : sporadicExelData) {
-            System.out.println(excelData);
-        }
         return mergedList;
     }
 
@@ -122,7 +233,7 @@ public class IOFile extends HttpServlet {
         var mapper = new ObjectMapper();
         var rootNode = mapper.readTree(fileJson);
         if (rootNode.isArray()) {
-            for (JsonNode node : rootNode) {
+            for (var node : rootNode) {
                 Map<String, Object> map = mapper.convertValue(node, new TypeReference<>() {});
                 jsonList.add(map);
             }
@@ -133,7 +244,7 @@ public class IOFile extends HttpServlet {
         return jsonList;
     }
 
-    private List<Map<String, Object>> readFileExcel(InputStream fileExcel) throws IOException {
+    private List<Map<String, Object>> readFileExcelBranch(InputStream fileExcel) throws IOException {
         var dataList = new ArrayList<Map<String, Object>>();
         var workbook = new XSSFWorkbook(fileExcel);
         var sheet = workbook.getSheetAt(0);
@@ -150,6 +261,8 @@ public class IOFile extends HttpServlet {
                 var cell = row.getCell(j);
                 if (cell == null) {
                     data.put(headerNames.get(j), null);
+                } else if (headerNames.get(j).equals("CITAD_CD")) {
+                    data.put("BRANCH_CODE", cell.getStringCellValue());
                 } else if (cell.getCellType() == CellType.NUMERIC) {
                     data.put(headerNames.get(j).strip().toUpperCase(), (int) cell.getNumericCellValue());
                 } else {
@@ -160,6 +273,39 @@ public class IOFile extends HttpServlet {
                     }
                 }
             }
+            dataList.add(data);
+        }
+        workbook.close();
+        return dataList;
+    }
+
+    private List<Map<String, Object>> readFileExcel(InputStream fileExcel) throws IOException {
+        var dataList = new ArrayList<Map<String, Object>>();
+        var workbook = new XSSFWorkbook(fileExcel);
+        var sheet = workbook.getSheetAt(0);
+        var headerRow = sheet.getRow(0);
+        var headerNames = new ArrayList<String>();
+        for (var cell : headerRow) {
+            headerNames.add(cell.getStringCellValue());
+        }
+        var rowCount = sheet.getLastRowNum();
+        for (var i = 1; i <= rowCount; i++) {
+            var row = sheet.getRow(i);
+            Map<String, Object> data = new HashMap<>();
+            IntStream.range(0, headerNames.size()).forEach(j -> {
+                var cell = row.getCell(j);
+                if (cell == null) {
+                    data.put(headerNames.get(j), null);
+                } else if (cell.getCellType() == CellType.NUMERIC) {
+                    data.put(headerNames.get(j).strip().toUpperCase(), (int) cell.getNumericCellValue());
+                } else {
+                    if (isInteger(cell.getStringCellValue())) {
+                        data.put(headerNames.get(j).strip().toUpperCase(), Integer.parseInt(cell.getStringCellValue()));
+                    } else {
+                        data.put(headerNames.get(j).strip().toUpperCase(), cell.getStringCellValue().strip());
+                    }
+                }
+            });
             dataList.add(data);
         }
         workbook.close();
