@@ -71,9 +71,7 @@ public class IOFile extends HttpServlet {
         var dataExcels = readFileExcelBranch(fileExcel);
         var dataJsons = readFileJson(fileJson);
         Map<String, List<Map<String, Object>>> map = dataExcels.stream().collect(Collectors.groupingBy(x -> String.valueOf(x.get("BANK_CODE"))));
-        map.forEach((k, v) -> {
-            map.put(k, mergeDataBranch(dataExcels ,dataJsons, v));
-        });
+        map.forEach((k, v) -> map.put(k, mergeDataBranch(dataExcels ,dataJsons, v)));
         Map<String, List<Map<String, Object>>> mapResult = getResult(dataJsons, map);
         System.out.println("data json = " + dataJsons.size());
         System.out.println("count bank update = " + mapResult.size());
